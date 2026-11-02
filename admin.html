@@ -46,7 +46,7 @@ function login(err) {
     </div>`;
   const pin = document.getElementById("pin"), ok = document.getElementById("ok");
   const go = async () => {
-    ok.disabled = true;
+    ok.disabled = true; ok.textContent = "Перевіряю… (до 10 с)";
     try { rows = await API.getAnswers(pin.value); setPin(pin.value); await load(true); }
     catch (e) { login(e.message); }
   };
