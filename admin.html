@@ -40,7 +40,7 @@ function login(err) {
     <div class="card stack" style="max-width:420px;margin:30px auto">
       ${demoBanner()}
       <h2>Вхід</h2>
-      <input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="PIN-код">
+      <input id="pin" type="text" name="adm-pin" inputmode="numeric" autocomplete="off" autocapitalize="off" spellcheck="false" style="-webkit-text-security:disc;text-security:disc" placeholder="PIN-код">
       ${err ? `<div class="err">${esc(err)}</div>` : ""}
       <button class="btn" id="ok">Увійти</button>
     </div>`;
