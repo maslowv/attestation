@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Атестація · Китайський Привіт</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="assets/kp.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;600;700&family=Unbounded:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <img src="assets/kp.png" alt="Кп">
+    <b>Китайський Привіт<small>Атестація офіціантів</small></b>
+  </div>
+  <main id="app" class="stack"></main>
+</div>
+<script src="config.js"></script>
+<script src="seed.js"></script>
+<script src="api.js"></script>
+<script>
+const app = document.getElementById("app");
+const DRAFT = "att_draft_v1";
+let qs = [];
+let step = -1;                       // -1 вітання, 0..n-1 питання, n фініш
+let draft = API.store.get(DRAFT, { name: "", answers: {}, sent: false });
+const save = () => API.store.set(DRAFT, draft);
+const ans = (qid, i) => (draft.answers[qid] || [])[i] || "";
+
+function view(html) {
+  app.innerHTML = `<div class="pop stack">${html}</div>`;
+  app.querySelectorAll("textarea").forEach(grow);
+  window.scrollTo({ top: 0 });
+}
+function grow(t) { t.style.height = "auto"; t.style.height = Math.max(84, t.scrollHeight + 4) + "px"; }
+function toast(msg) {
+  const t = Object.assign(document.createElement("div"), { className: "toast", textContent: msg });
+  document.body.append(t); setTimeout(() => t.remove(), 2800);
+}
+
+function welcome() {
+  step = -1;
+  view(`
+    <div class="card hero stack">
+      <video autoplay muted loop playsinline aria-hidden="true">
+        <source src="assets/hi.mov" type='video/quicktime; codecs="hvc1"'>
+        <source src="assets/hi.webm" type="video/webm">
+      </video>
+      <h1>Привіт! Час для атестації 👋</h1>
+      <p class="muted" style="margin-bottom:0">Тут немає балів і правильних відповідей. Пиши так, як сказав би гостю, своїми словами. Нам цікаво, як ти думаєш.</p>
+      <div style="text-align:left">
+        <label class="lbl" for="name">Як тебе звати?</label>
+        <input id="name" type="text" autocomplete="name" placeholder="Ім’я та прізвище" value="${esc(draft.name)}">
+      </div>
+      <button class="btn" id="go">${Object.keys(draft.answers).length ? "Продовжити" : "Поїхали"} →</button>
+      <small class="muted" style="display:block">${qs.length} ситуацій · прогрес зберігається сам</small>
+    </div>`);
+  const name = document.getElementById("name");
+  name.oninput = () => { draft.name = name.value; save(); };
+  document.getElementById("go").onclick = () => {
+    if (!name.value.trim()) { name.focus(); toast("Напиши, будь ласка, своє ім’я"); return; }
+    show(0);
+  };
+}
+
+function show(i) {
+  step = i;
+  if (i >= qs.length) return finish();
+  draft.step = i; save();
+  const q = qs[i];
+  const pct = Math.round((i / qs.length) * 100);
+  const last = i === qs.length - 1;
+  view(`
+    <div class="progress" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><i style="width:${Math.max(pct, 4)}%"></i></div>
+    <div class="card">
+      <span class="sticker">Ситуація ${i + 1} з ${qs.length}</span>
+      <h2 class="q-title">${esc(q.title)}</h2>
+      ${q.context ? `<div class="note"><span class="tag">💡 Пояснення</span>${esc(q.context)}</div>` : ""}
+      <div style="margin-top:20px">
+        ${q.prompts.map((p, k) => `
+          <div class="prompt">
+            <label class="lbl" for="p${k}">${esc(p)}</label>
+            <textarea id="p${k}" data-k="${k}" placeholder="Твоя відповідь…">${esc(ans(q.id, k))}</textarea>
+          </div>`).join("")}
+      </div>
+    </div>
+    <div class="row between">
+      <button class="btn ghost" id="back">← Назад</button>
+      <button class="btn" id="next">${last ? "Надіслати ✓" : "Далі →"}</button>
+    </div>`);
+  app.querySelectorAll("textarea").forEach(t => t.addEventListener("input", () => {
+    grow(t);
+    const a = draft.answers[q.id] || (draft.answers[q.id] = []);
+    a[+t.dataset.k] = t.value;
+    draft.sent = false; save();
+  }));
+  document.getElementById("back").onclick = () => { if (i === 0) { draft.step = -1; save(); welcome(); } else show(i - 1); };
+  document.getElementById("next").onclick = () => (last ? submit() : show(i + 1));
+}
+
+async function submit() {
+  const rows = [];
+  qs.forEach(q => q.prompts.forEach((p, k) => {
+    const text = ans(q.id, k).trim();
+    if (text) rows.push({ qid: q.id, question: q.title, pi: k, prompt: p, text });
+  }));
+  if (!rows.length) { toast("Поки жодної відповіді — напиши хоча б одну 🙂"); return; }
+  const btn = document.getElementById("next");
+  btn.disabled = true; btn.textContent = "Надсилаю…";
+  try {
+    await API.submit(draft.name.trim(), rows);
+    draft.sent = true; save();
+    finish();
+  } catch (e) {
+    btn.disabled = false; btn.textContent = "Надіслати ✓";
+    toast("Не вдалося надіслати. Перевір інтернет і спробуй ще раз");
+  }
+}
+
+function finish() {
+  step = qs.length;
+  view(`
+    <div class="card hero stack">
+      <span class="big-emoji">🥟</span>
+      <h1>Дякуємо, ${esc(draft.name.split(" ")[0] || "друже")}!</h1>
+      <p class="muted" style="margin:0">Відповіді надіслано. Можна вирушати зустрічати гостей.</p>
+      <button class="btn ghost" id="edit">Змінити відповіді</button>
+    </div>`);
+  document.getElementById("edit").onclick = () => show(0);
+}
+
+(async function init() {
+  view(`<div class="card hero"><span class="big-emoji">🥢</span><p class="muted">Завантажую питання…</p></div>`);
+  try {
+    qs = (await API.getQuestions()).filter(q => q.prompts && q.prompts.length);
+    // повертаємо людину туди, де вона зупинилась
+    if (draft.name && !draft.sent && Number.isInteger(draft.step) && draft.step >= 0) show(Math.min(draft.step, qs.length - 1));
+    else if (draft.sent) finish();
+    else welcome();
+  } catch (e) {
+    view(`<div class="card hero stack"><p class="err">Не вдалося завантажити питання.</p><button class="btn" onclick="location.reload()">Спробувати ще раз</button></div>`);
+  }
+})();
+</script>
+</body>
+</html>

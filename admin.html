@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Адмінка · Атестація</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="assets/kp.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;600;700&family=Unbounded:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap wide">
+  <div class="top">
+    <img src="assets/kp.png" alt="Кп">
+    <b>Адмінка<small>Атестація офіціантів · Китайський Привіт</small></b>
+  </div>
+  <div id="app"></div>
+</div>
+<script src="config.js"></script>
+<script src="seed.js"></script>
+<script src="api.js"></script>
+<script>
+const app = document.getElementById("app");
+const getPin = () => { try { return sessionStorage.getItem("att_pin") || ""; } catch { return ""; } };
+const setPin = v => { try { v ? sessionStorage.setItem("att_pin", v) : sessionStorage.removeItem("att_pin"); } catch {} };
+let tab = "answers", mode = "q", who = null;
+let rows = [], questions = [], edit = [], dirty = false;
+
+function toast(msg) {
+  const t = Object.assign(document.createElement("div"), { className: "toast", textContent: msg });
+  document.body.append(t); setTimeout(() => t.remove(), 2800);
+}
+const demoBanner = () => API.demo ? `<div class="demo-banner">Демо-режим: дані лише в цьому браузері, PIN — <b>1234</b>. Підключи Google-таблицю в <code>config.js</code>.</div>` : "";
+
+function login(err) {
+  app.innerHTML = `
+    <div class="card stack" style="max-width:420px;margin:30px auto">
+      ${demoBanner()}
+      <h2>Вхід</h2>
+      <input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="PIN-код">
+      ${err ? `<div class="err">${esc(err)}</div>` : ""}
+      <button class="btn" id="ok">Увійти</button>
+    </div>`;
+  const pin = document.getElementById("pin"), ok = document.getElementById("ok");
+  const go = async () => {
+    ok.disabled = true;
+    try { rows = await API.getAnswers(pin.value); setPin(pin.value); await load(true); }
+    catch (e) { login(e.message); }
+  };
+  ok.onclick = go; pin.onkeydown = e => e.key === "Enter" && go(); pin.focus();
+}
+
+async function load(skipRows) {
+  try {
+    if (!skipRows) rows = await API.getAnswers(getPin());
+    questions = await API.getQuestions();
+    if (!dirty) edit = structuredClone(questions);
+    render();
+  } catch (e) { setPin(""); login(e.message); }
+}
+
+function render() {
+  app.innerHTML = `
+    ${demoBanner()}
+    <div class="row between" style="margin-bottom:14px">
+      <div class="tabs" style="margin:0">
+        <button class="tab ${tab === "answers" ? "on" : ""}" data-tab="answers">Відповіді</button>
+        <button class="tab ${tab === "edit" ? "on" : ""}" data-tab="edit">Питання ${dirty ? "•" : ""}</button>
+      </div>
+      <div class="row">
+        <button class="btn ghost small" id="refresh">Оновити</button>
+        <button class="btn ghost small" id="logout">Вийти</button>
+      </div>
+    </div>
+    <div id="body"></div>`;
+  app.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => { tab = b.dataset.tab; render(); });
+  document.getElementById("refresh").onclick = () => load();
+  document.getElementById("logout").onclick = () => { setPin(""); login(); };
+  tab === "answers" ? renderAnswers() : renderEdit();
+}
+
+/* ---------- відповіді ---------- */
+const names = () => [...new Map(rows.map(r => [r.name.toLowerCase(), r.name])).values()].sort((a, b) => a.localeCompare(b, "uk"));
+const fmt = ts => { const d = new Date(ts); return isNaN(d) ? "" : d.toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }); };
+
+function renderAnswers() {
+  const body = document.getElementById("body");
+  const ns = names();
+  if (!ns.length) { body.innerHTML = `<div class="card">Поки ніхто не відповів. Скинь офіціантам посилання на <b>index.html</b> 🙂</div>`; return; }
+  body.innerHTML = `
+    <div class="row between" style="margin-bottom:14px">
+      <div><span class="badge">Відповіли: ${ns.length}</span> <span class="muted">${ns.map(esc).join(", ")}</span></div>
+      <button class="btn ghost small" id="csv">Експорт CSV</button>
+    </div>
+    <div class="chips">
+      <button class="chip ${mode === "q" ? "on" : ""}" data-m="q">За питаннями</button>
+      <button class="chip ${mode === "w" ? "on" : ""}" data-m="w">За офіціантами</button>
+    </div>
+    <div id="list" class="stack"></div>`;
+  body.querySelectorAll("[data-m]").forEach(c => c.onclick = () => { mode = c.dataset.m; renderAnswers(); });
+  document.getElementById("csv").onclick = exportCsv;
+  const list = document.getElementById("list");
+  if (mode === "q") list.innerHTML = byQuestion(); else byWaiter(list, ns);
+}
+
+function qOrder() {
+  const known = questions.map(q => q.id);
+  const orphan = [...new Set(rows.map(r => r.qid))].filter(id => !known.includes(id));
+  return known.concat(orphan);
+}
+const titleOf = id => (questions.find(q => q.id === id) || rows.find(r => r.qid === id) || {}).title || (rows.find(r => r.qid === id) || {}).question || id;
+
+function byQuestion() {
+  return qOrder().map(id => {
+    const rs = rows.filter(r => r.qid === id);
+    if (!rs.length) return "";
+    const prompts = [...new Map(rs.map(r => [r.pi + "|" + r.prompt, r])).values()].sort((a, b) => a.pi - b.pi);
+    const q = questions.find(q => q.id === id);
+    return `<div class="card">
+      <h3>${esc(titleOf(id))}</h3>
+      ${q && q.context ? `<p class="muted" style="margin:8px 0 0">${esc(q.context)}</p>` : ""}
+      ${prompts.map(p => `
+        <div class="pq"><h4>${esc(p.prompt)}</h4>
+          ${rs.filter(r => r.pi == p.pi && r.prompt === p.prompt).map(r => `
+            <div class="ans"><div class="who">${esc(r.name)}</div><div class="txt">${esc(r.text)}</div></div>`).join("")}
+        </div>`).join("")}
+    </div>`;
+  }).join("");
+}
+
+function byWaiter(list, ns) {
+  if (!who || !ns.includes(who)) who = ns[0];
+  const mine = rows.filter(r => r.name === who);
+  const ts = mine.map(r => r.ts).sort().pop();
+  list.innerHTML = `
+    <div class="chips">${ns.map(n => `<button class="chip ${n === who ? "on" : ""}" data-w="${esc(n)}">${esc(n)}</button>`).join("")}</div>
+    <div class="muted">Надіслано: ${esc(fmt(ts))} · відповідей: ${mine.length}</div>
+    ${qOrder().map(id => {
+      const rs = mine.filter(r => r.qid === id).sort((a, b) => a.pi - b.pi);
+      if (!rs.length) return "";
+      return `<div class="card"><h3>${esc(titleOf(id))}</h3>
+        ${rs.map(r => `<div class="pq"><h4>${esc(r.prompt)}</h4><div class="txt" style="white-space:pre-wrap">${esc(r.text)}</div></div>`).join("")}
+      </div>`;
+    }).join("")}`;
+  list.querySelectorAll("[data-w]").forEach(c => c.onclick = () => { who = c.dataset.w; renderAnswers(); });
+}
+
+function exportCsv() {
+  const cell = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const head = ["Час", "Офіціант", "Питання", "Підпитання", "Відповідь"];
+  const body = rows.map(r => [r.ts, r.name, r.question, r.prompt, r.text].map(cell).join(","));
+  const blob = new Blob(["﻿" + [head.map(cell).join(","), ...body].join("\n")], { type: "text/csv;charset=utf-8" });
+  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: "attestation-answers.csv" });
+  a.click(); URL.revokeObjectURL(a.href);
+}
+
+/* ---------- редактор питань ---------- */
+function renderEdit() {
+  const body = document.getElementById("body");
+  body.innerHTML = `
+    <p class="muted" style="margin-top:0">Заголовок і пояснення офіціант бачить до відповіді. Кожен «Підпункт» — окреме поле для відповіді. Старі відповіді не зникають, навіть якщо змінити питання.</p>
+    <div class="stack">
+      ${edit.map((q, i) => `
+        <div class="card" data-i="${i}">
+          <div class="row between"><span class="sticker">№ ${i + 1}</span>
+            <div class="row">
+              <button class="iconbtn" data-act="up" title="Вгору" ${i === 0 ? "disabled" : ""}>↑</button>
+              <button class="iconbtn" data-act="down" title="Вниз" ${i === edit.length - 1 ? "disabled" : ""}>↓</button>
+              <button class="iconbtn" data-act="del" title="Видалити питання">🗑</button>
+            </div>
+          </div>
+          <label class="lbl" style="margin-top:14px">Заголовок</label>
+          <input type="text" data-f="title" value="${esc(q.title)}">
+          <label class="lbl" style="margin-top:14px">Пояснення (опис ситуації)</label>
+          <textarea data-f="context">${esc(q.context)}</textarea>
+          <label class="lbl" style="margin-top:14px">Підпункти (що саме треба відповісти)</label>
+          ${q.prompts.map((p, k) => `
+            <div class="edit-p" data-k="${k}">
+              <input type="text" data-f="prompt" value="${esc(p)}">
+              <button class="iconbtn" data-act="delp" title="Прибрати">✕</button>
+            </div>`).join("")}
+          <button class="btn ghost small" data-act="addp" style="margin-top:12px">+ Підпункт</button>
+        </div>`).join("")}
+      <button class="btn ghost" id="addq">+ Нове питання</button>
+    </div>
+    <div class="savebar"><button class="btn" id="save" ${dirty ? "" : "disabled"}>Зберегти зміни</button></div>`;
+
+  body.querySelectorAll("textarea").forEach(t => { t.style.height = "auto"; t.style.height = Math.max(84, t.scrollHeight + 4) + "px"; });
+  body.querySelectorAll("[data-f]").forEach(el => el.addEventListener("input", () => {
+    const i = +el.closest("[data-i]").dataset.i, f = el.dataset.f;
+    if (f === "prompt") edit[i].prompts[+el.closest("[data-k]").dataset.k] = el.value; else edit[i][f] = el.value;
+    if (el.tagName === "TEXTAREA") { el.style.height = "auto"; el.style.height = Math.max(84, el.scrollHeight + 4) + "px"; }
+    markDirty();
+  }));
+  body.querySelectorAll("[data-act]").forEach(b => b.onclick = () => {
+    const card = b.closest("[data-i]"), i = card && +card.dataset.i, a = b.dataset.act;
+    if (a === "up") [edit[i - 1], edit[i]] = [edit[i], edit[i - 1]];
+    if (a === "down") [edit[i + 1], edit[i]] = [edit[i], edit[i + 1]];
+    if (a === "del" && confirm("Видалити це питання?")) edit.splice(i, 1);
+    if (a === "addp") edit[i].prompts.push("");
+    if (a === "delp") edit[i].prompts.splice(+b.closest("[data-k]").dataset.k, 1);
+    markDirty(true);
+  });
+  document.getElementById("addq").onclick = () => { edit.push({ id: API.uid(), title: "", context: "", prompts: [""] }); markDirty(true); };
+  document.getElementById("save").onclick = saveEdit;
+}
+function markDirty(rerender) {
+  dirty = true;
+  if (rerender) renderEdit();
+  const s = document.getElementById("save"); if (s) s.disabled = false;
+  const t = document.querySelector('[data-tab="edit"]'); if (t) t.textContent = "Питання •";
+}
+async function saveEdit() {
+  const clean = edit
+    .map(q => ({ id: q.id, title: q.title.trim(), context: q.context.trim(), prompts: q.prompts.map(p => p.trim()).filter(Boolean) }))
+    .filter(q => q.title || q.prompts.length);
+  const bad = clean.find(q => !q.title || !q.prompts.length);
+  if (bad) { toast("У кожного питання має бути заголовок і хоча б один підпункт"); return; }
+  const btn = document.getElementById("save"); btn.disabled = true; btn.textContent = "Зберігаю…";
+  try {
+    await API.saveQuestions(getPin(), clean);
+    questions = clean; edit = structuredClone(clean); dirty = false;
+    toast("Збережено ✓"); render();
+  } catch (e) { btn.disabled = false; btn.textContent = "Зберегти зміни"; toast("Помилка: " + e.message); }
+}
+window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+
+getPin() ? load() : login();
+</script>
+</body>
+</html>
